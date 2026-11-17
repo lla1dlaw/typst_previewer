@@ -19,8 +19,10 @@ typst = "0.15"
 typst-render = "0.15"
 typst-layout = "0.15"
 typst-library = "0.15"
+typst-utils = "0.15"
 typst-assets = { version = "0.15", features = ["fonts"] }
 comemo = "0.5"
+fontdb = "0.23"
 
 # Neovim RPC
 nvim-rs = { version = "0.9", features = ["use_tokio"] }

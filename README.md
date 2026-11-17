@@ -33,7 +33,25 @@ Neovim buffer edit (stdio msgpack-RPC)
 
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
-Add this to your lazy plugins (e.g. in `lua/plugins/typst.lua`):
+#### Option 1: Fast Install (Pre-compiled Binary, Recommended)
+Installs in seconds by downloading the official pre-built binary for your platform (Linux, macOS, Windows) from GitHub releases:
+
+```lua
+{
+  "lla1dlaw/typst_previewer",
+  build = ":TypstPreviewInstall",
+  ft = "typst",
+  opts = {
+    keymaps = {
+      toggle = "<leader>tp",
+    },
+  },
+}
+```
+*(Alternatively, you can omit `build` entirely and `auto_download = true` will automatically fetch the binary the first time you run `:TypstPreview`.)*
+
+#### Option 2: Compile from Source with Cargo
+If you prefer compiling locally via Cargo:
 
 ```lua
 {
@@ -42,15 +60,11 @@ Add this to your lazy plugins (e.g. in `lua/plugins/typst.lua`):
   ft = "typst",
   opts = {
     keymaps = {
-      toggle = "<leader>tp", -- Keymap to toggle preview
-      open = "<leader>to",   -- Keymap to open preview
-      close = "<leader>tc",  -- Keymap to close preview
+      toggle = "<leader>tp",
     },
   },
 }
 ```
-
-Lazy.nvim will automatically clone the repository and run `cargo build --release`.
 
 ### Manual Build
 
@@ -70,13 +84,26 @@ Default options passed to `setup()`:
 
 ```lua
 require("typst_previewer").setup({
-  -- Optional path to the binary if installed in a custom location.
-  -- By default, it auto-discovers:
-  -- 1. plugin target/release/typst-previewer
-  -- 2. plugin target/debug/typst-previewer
-  -- 3. system PATH (typst-previewer)
+  -- Custom binary path or nil for auto-discovery
   binary_path = nil,
 
+  -- Automatically download pre-built release binary from GitHub if missing
+  auto_download = true,
+
+  -- Automatically adjust window size to document dimensions and font scaling
+  auto_resize = true,
+
+  -- Maximum auto-resized window dimensions in points
+  max_width = 1400,
+  max_height = 1100,
+
+  -- Custom display scale factor override or nil (auto-detected from OS display)
+  scale_factor = nil,
+
+  -- Discover and load system fonts across Linux, macOS, and Windows
+  system_fonts = true,
+
+  -- Default keymaps
   keymaps = {
     toggle = "<leader>tp",
     open = nil,
@@ -92,6 +119,7 @@ require("typst_previewer").setup({
 | `:TypstPreview` | Open the preview window for the current buffer |
 | `:TypstPreviewClose` | Close the preview window |
 | `:TypstPreviewToggle` | Toggle the preview window |
+| `:TypstPreviewInstall` | Download and install pre-built binary from GitHub Releases |
 
 ## Architecture
 

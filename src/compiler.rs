@@ -11,6 +11,7 @@ use typst::{Library, LibraryExt, World, WorldExt};
 use typst_layout::PagedDocument;
 use typst_library::layout::{Abs, Frame, FrameItem, Point};
 use typst_render::{render, RenderOptions};
+use typst_utils::Scalar;
 
 /// A single rendered page containing raw RGBA pixel data and dimensions.
 #[derive(Clone, Debug)]
@@ -27,11 +28,13 @@ pub struct TypstCompiler {
     fontbook: Arc<LazyHash<FontBook>>,
     fonts: Arc<Vec<Font>>,
     document: Option<PagedDocument>,
+    scale_factor: f32,
+    system_fonts_enabled: bool,
 }
 
 impl TypstCompiler {
     pub fn new() -> Self {
-        let (fontbook, fonts) = Self::load_fonts();
+        let (fontbook, fonts) = Self::load_fonts(true);
         Self {
             rope: Rope::new(),
             filepath: PathBuf::from("main.typ"),
@@ -39,13 +42,16 @@ impl TypstCompiler {
             fontbook: Arc::new(LazyHash::new(fontbook)),
             fonts: Arc::new(fonts),
             document: None,
+            scale_factor: 1.0,
+            system_fonts_enabled: true,
         }
     }
 
-    fn load_fonts() -> (FontBook, Vec<Font>) {
+    fn load_fonts(system_fonts: bool) -> (FontBook, Vec<Font>) {
         let mut book = FontBook::new();
         let mut fonts = Vec::new();
 
+        // 1. Embedded standard Typst fonts (always available, instant)
         for data in typst_assets::fonts() {
             let buffer = Bytes::new(data);
             for font in Font::iter(buffer) {
@@ -54,7 +60,50 @@ impl TypstCompiler {
             }
         }
 
+        // 2. Discover system fonts across Linux, macOS, and Windows
+        if system_fonts {
+            let mut db = fontdb::Database::new();
+            db.load_system_fonts();
+            let mut seen_paths = std::collections::HashSet::new();
+            for face in db.faces() {
+                if let Some((fontdb::Source::File(path), _)) = db.face_source(face.id) {
+                    if seen_paths.insert(path.clone()) {
+                        if let Ok(data) = std::fs::read(&path) {
+                            let buffer = Bytes::new(data);
+                            for font in Font::iter(buffer) {
+                                book.push(font.info().clone());
+                                fonts.push(font);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         (book, fonts)
+    }
+
+    /// Configures system font discovery.
+    pub fn set_system_fonts(&mut self, enable: bool) {
+        if self.system_fonts_enabled != enable {
+            self.system_fonts_enabled = enable;
+            let (fontbook, fonts) = Self::load_fonts(enable);
+            self.fontbook = Arc::new(LazyHash::new(fontbook));
+            self.fonts = Arc::new(fonts);
+        }
+    }
+
+    /// Sets the display scale factor (e.g. 1.0 for standard, 2.0 for Retina/HiDPI).
+    pub fn set_scale_factor(&mut self, factor: f32) {
+        self.scale_factor = factor.max(0.25);
+    }
+
+    /// Returns the primary page layout dimensions in typographic points (width, height).
+    #[allow(dead_code)]
+    pub fn primary_page_size_pt(&self) -> Option<(f32, f32)> {
+        let doc = self.document.as_ref()?;
+        let page = doc.pages().first()?;
+        Some((page.frame.size().x.to_pt() as f32, page.frame.size().y.to_pt() as f32))
     }
 
     /// Sets the entire source text and the file path.
@@ -131,7 +180,9 @@ impl TypstCompiler {
             }
         };
 
-        let opts = RenderOptions::default();
+        let mut opts = RenderOptions::default();
+        opts.pixel_per_pt = Scalar::new((2.0 * self.scale_factor) as f64);
+
         let pages: Vec<RenderedPage> = document
             .pages()
             .iter()
@@ -344,14 +395,25 @@ mod tests {
         let pages = compiler.compile_and_render();
         assert!(pages.is_some());
 
-        // In a typical A4/Letter Typst page, margins are ~72pt (1 inch).
-        // The top heading is near x = 72..200, y = 72..100.
         let hit = compiler.click_to_source(0, 80.0, 80.0);
         assert!(hit.is_some());
         let (file, line, col) = hit.unwrap();
         assert_eq!(file, "doc.typ");
-        // Line should be line 1 (the heading)
         assert_eq!(line, 1);
         assert!(col <= 9);
+    }
+
+    #[test]
+    fn test_primary_page_size() {
+        let mut compiler = TypstCompiler::new();
+        compiler.set_source("= Page Size Test".to_string(), "doc.typ".to_string());
+        compiler.compile_and_render();
+
+        let size = compiler.primary_page_size_pt();
+        assert!(size.is_some());
+        let (w, h) = size.unwrap();
+        // A4 is 595.28 x 841.89 pt
+        assert!((w - 595.28).abs() < 5.0);
+        assert!((h - 841.89).abs() < 5.0);
     }
 }

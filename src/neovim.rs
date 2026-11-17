@@ -3,13 +3,36 @@ use nvim_rs::{create::tokio as create, Handler, Neovim};
 use rmpv::Value;
 use tokio::sync::mpsc;
 
+/// Configuration options passed from Neovim Lua to the previewer.
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+    pub auto_resize: bool,
+    pub max_width: Option<f32>,
+    pub max_height: Option<f32>,
+    pub scale_factor: Option<f32>,
+    pub system_fonts: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            auto_resize: true,
+            max_width: Some(1400.0),
+            max_height: Some(1100.0),
+            scale_factor: None,
+            system_fonts: true,
+        }
+    }
+}
+
 /// Messages dispatched from the Neovim RPC reader to the main GUI thread.
 #[derive(Debug)]
 pub enum NvimMessage {
-    /// Initial buffer content and file path.
+    /// Initial buffer content, file path, and configuration.
     InitBuffer {
         content: String,
         filepath: String,
+        config: AppConfig,
     },
     /// Incremental delta line update from nvim_buf_attach.
     BufferLines {
@@ -50,7 +73,31 @@ impl Handler for NvimHandler {
                 if let Some(map) = args.first().and_then(|v| v.as_map()) {
                     let content = find_str(map, "content").unwrap_or_default().to_string();
                     let filepath = find_str(map, "filepath").unwrap_or_default().to_string();
-                    let _ = self.tx.send(NvimMessage::InitBuffer { content, filepath });
+
+                    let mut config = AppConfig::default();
+                    if let Some(cfg_map) = find_map(map, "config") {
+                        if let Some(v) = find_bool(cfg_map, "auto_resize") {
+                            config.auto_resize = v;
+                        }
+                        if let Some(v) = find_f64(cfg_map, "max_width") {
+                            config.max_width = Some(v as f32);
+                        }
+                        if let Some(v) = find_f64(cfg_map, "max_height") {
+                            config.max_height = Some(v as f32);
+                        }
+                        if let Some(v) = find_f64(cfg_map, "scale_factor") {
+                            config.scale_factor = Some(v as f32);
+                        }
+                        if let Some(v) = find_bool(cfg_map, "system_fonts") {
+                            config.system_fonts = v;
+                        }
+                    }
+
+                    let _ = self.tx.send(NvimMessage::InitBuffer {
+                        content,
+                        filepath,
+                        config,
+                    });
                 }
             }
             "buffer_lines" => {
@@ -117,23 +164,41 @@ pub async fn run_rpc(
 
 fn find_str<'a>(map: &'a [(Value, Value)], key: &str) -> Option<&'a str> {
     map.iter()
-        .find(|(k, _)| k.as_str() == Some(key))
-        .and_then(|(_, v)| v.as_str())
+        .find(|(k, _)| k.as_str() == Some(key) || k.as_slice() == Some(key.as_bytes()))
+        .and_then(|(_, v)| v.as_str().or_else(|| v.as_slice().and_then(|b| std::str::from_utf8(b).ok())))
+}
+
+fn find_bool(map: &[(Value, Value)], key: &str) -> Option<bool> {
+    map.iter()
+        .find(|(k, _)| k.as_str() == Some(key) || k.as_slice() == Some(key.as_bytes()))
+        .and_then(|(_, v)| v.as_bool())
+}
+
+fn find_f64(map: &[(Value, Value)], key: &str) -> Option<f64> {
+    map.iter()
+        .find(|(k, _)| k.as_str() == Some(key) || k.as_slice() == Some(key.as_bytes()))
+        .and_then(|(_, v)| v.as_f64().or_else(|| v.as_u64().map(|n| n as f64)).or_else(|| v.as_i64().map(|n| n as f64)))
+}
+
+fn find_map<'a>(map: &'a [(Value, Value)], key: &str) -> Option<&'a [(Value, Value)]> {
+    map.iter()
+        .find(|(k, _)| k.as_str() == Some(key) || k.as_slice() == Some(key.as_bytes()))
+        .and_then(|(_, v)| v.as_map().map(|m| m.as_slice()))
 }
 
 fn find_usize(map: &[(Value, Value)], key: &str) -> Option<usize> {
     map.iter()
-        .find(|(k, _)| k.as_str() == Some(key))
+        .find(|(k, _)| k.as_str() == Some(key) || k.as_slice() == Some(key.as_bytes()))
         .and_then(|(_, v)| v.as_u64().map(|n| n as usize).or_else(|| v.as_i64().map(|n| n as usize)))
 }
 
 fn find_string_array(map: &[(Value, Value)], key: &str) -> Vec<String> {
     map.iter()
-        .find(|(k, _)| k.as_str() == Some(key))
+        .find(|(k, _)| k.as_str() == Some(key) || k.as_slice() == Some(key.as_bytes()))
         .and_then(|(_, v)| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .filter_map(|v| v.as_str().or_else(|| v.as_slice().and_then(|b| std::str::from_utf8(b).ok())).map(String::from))
                 .collect()
         })
         .unwrap_or_default()

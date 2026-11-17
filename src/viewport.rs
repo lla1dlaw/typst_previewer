@@ -16,6 +16,7 @@ pub struct PageLayout {
 pub struct Viewport {
     pub scroll_y: f32,
     pub zoom: f32,
+    pub scale_factor: f32,
     pub window_width: u32,
     pub window_height: u32,
     /// Base dimensions of rendered pages (width, height)
@@ -30,12 +31,21 @@ impl Viewport {
         Self {
             scroll_y: 0.0,
             zoom: 1.0,
+            scale_factor: 1.0,
             window_width: 800,
             window_height: 1000,
             page_sizes: Vec::new(),
             page_y_offsets: Vec::new(),
             total_document_height: 0.0,
         }
+    }
+
+    pub fn set_scale_factor(&mut self, factor: f32) {
+        self.scale_factor = factor.max(0.25);
+    }
+
+    pub fn primary_page_size(&self) -> Option<(f32, f32)> {
+        self.page_sizes.first().copied()
     }
 
     pub fn set_window_size(&mut self, width: u32, height: u32) {
@@ -49,11 +59,11 @@ impl Viewport {
         self.page_sizes.clear();
         self.page_y_offsets.clear();
 
+        let dpi_multiplier = 2.0 * self.scale_factor;
         let mut current_y = PADDING_TOP_PX;
         for page in pages {
-            // Rendered at 2.0x DPI; base CSS-equivalent points is width / 2.0
-            let base_w = (page.width as f32) / 2.0;
-            let base_h = (page.height as f32) / 2.0;
+            let base_w = (page.width as f32) / dpi_multiplier;
+            let base_h = (page.height as f32) / dpi_multiplier;
 
             self.page_sizes.push((base_w, base_h));
             self.page_y_offsets.push(current_y);

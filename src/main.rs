@@ -15,7 +15,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::compiler::TypstCompiler;
-use crate::neovim::{NvimMessage, OutgoingMessage};
+use crate::neovim::{AppConfig, NvimMessage, OutgoingMessage};
 use crate::renderer::Renderer;
 use crate::viewport::Viewport;
 
@@ -31,6 +31,7 @@ struct App {
     renderer: Option<Renderer>,
     compiler: TypstCompiler,
     viewport: Viewport,
+    config: AppConfig,
     pending_recompile: bool,
     last_edit_time: Instant,
     initial_compiled: bool,
@@ -45,6 +46,7 @@ impl App {
             renderer: None,
             compiler: TypstCompiler::new(),
             viewport: Viewport::new(),
+            config: AppConfig::default(),
             pending_recompile: false,
             last_edit_time: Instant::now(),
             initial_compiled: false,
@@ -53,11 +55,43 @@ impl App {
         }
     }
 
+    fn current_scale_factor(&self) -> f32 {
+        if let Some(factor) = self.config.scale_factor {
+            factor.max(0.25)
+        } else if let Some(window) = &self.window {
+            window.scale_factor() as f32
+        } else {
+            1.0
+        }
+    }
+
     fn recompile_and_update(&mut self) {
         if let Some(pages) = self.compiler.compile_and_render() {
             self.viewport.set_pages(&pages);
             if let Some(renderer) = &mut self.renderer {
                 renderer.update_page_textures(&pages);
+            }
+
+            // Adjust window size to match document dimensions and font scaling
+            if self.config.auto_resize {
+                if let Some(window) = &self.window {
+                    if let Some((page_w, page_h)) = self.viewport.primary_page_size() {
+                        let max_w = self.config.max_width.unwrap_or(1400.0);
+                        let max_h = self.config.max_height.unwrap_or(1100.0);
+
+                        let target_w = ((page_w + 48.0) * self.viewport.zoom).clamp(360.0, max_w);
+                        let target_h = ((page_h + 72.0) * self.viewport.zoom).clamp(300.0, max_h);
+
+                        let current_size = window.inner_size();
+                        let scale = self.viewport.scale_factor;
+                        let current_w = current_size.width as f32 / scale;
+                        let current_h = current_size.height as f32 / scale;
+
+                        if (target_w - current_w).abs() > 8.0 || (target_h - current_h).abs() > 8.0 {
+                            let _ = window.request_inner_size(winit::dpi::LogicalSize::new(target_w, target_h));
+                        }
+                    }
+                }
             }
         }
         self.pending_recompile = false;
@@ -73,11 +107,20 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
+        let initial_scale = self.current_scale_factor();
+        self.viewport.set_scale_factor(initial_scale);
+        self.compiler.set_scale_factor(initial_scale);
+
         let attrs = Window::default_attributes()
             .with_title("Typst Preview")
-            .with_inner_size(winit::dpi::LogicalSize::new(900.0, 1100.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(850.0, 1050.0));
 
         let window = Arc::new(event_loop.create_window(attrs).expect("Failed to create preview window"));
+        let scale = window.scale_factor() as f32;
+        let effective_scale = self.config.scale_factor.unwrap_or(scale);
+        self.viewport.set_scale_factor(effective_scale);
+        self.compiler.set_scale_factor(effective_scale);
+
         let size = window.inner_size();
         self.viewport.set_window_size(size.width, size.height);
 
@@ -85,7 +128,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.renderer = Some(renderer);
         self.window = Some(window);
 
-        // If content was received before window creation, compile it now
+        // If content was received before window creation, compile now
         if !self.initial_compiled && !self.compiler.get_source().is_empty() {
             self.initial_compiled = true;
             self.recompile_and_update();
@@ -94,7 +137,14 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::Nvim(NvimMessage::InitBuffer { content, filepath }) => {
+            AppEvent::Nvim(NvimMessage::InitBuffer { content, filepath, config }) => {
+                self.config = config;
+                self.compiler.set_system_fonts(self.config.system_fonts);
+
+                let effective_scale = self.current_scale_factor();
+                self.viewport.set_scale_factor(effective_scale);
+                self.compiler.set_scale_factor(effective_scale);
+
                 self.compiler.set_source(content, filepath);
                 if self.window.is_some() {
                     self.initial_compiled = true;
@@ -117,6 +167,12 @@ impl ApplicationHandler<AppEvent> for App {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let effective_scale = self.config.scale_factor.unwrap_or(scale_factor as f32);
+                self.viewport.set_scale_factor(effective_scale);
+                self.compiler.set_scale_factor(effective_scale);
+                self.recompile_and_update();
             }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
