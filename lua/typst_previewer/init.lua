@@ -298,9 +298,24 @@ function M.toggle()
   end
 end
 
+--- Aliases for compatibility
+M.start = M.open
+M.stop = M.close
+
 -- User commands
-vim.api.nvim_create_user_command("TypstPreview", function() M.open() end, { desc = "Open Typst Preview" })
+vim.api.nvim_create_user_command("TypstPreview", function(cmd_opts)
+  local arg = (cmd_opts and cmd_opts.args) and vim.trim(cmd_opts.args):lower() or ""
+  if arg == "stop" or arg == "close" then
+    M.close()
+  elseif arg == "toggle" then
+    M.toggle()
+  else
+    M.open()
+  end
+end, { nargs = "?", desc = "Open Typst Preview (supports 'start', 'stop', 'toggle')" })
+
 vim.api.nvim_create_user_command("TypstPreviewClose", function() M.close() end, { desc = "Close Typst Preview" })
+vim.api.nvim_create_user_command("TypstPreviewStop", function() M.close() end, { desc = "Stop Typst Preview" })
 vim.api.nvim_create_user_command("TypstPreviewToggle", function() M.toggle() end, { desc = "Toggle Typst Preview" })
 vim.api.nvim_create_user_command("TypstPreviewInstall", function() M.install() end, { desc = "Install pre-built Typst Previewer binary" })
 
