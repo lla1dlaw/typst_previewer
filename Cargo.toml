@@ -2,6 +2,9 @@
 name = "typst-previewer"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/lla1dlaw/typst_previewer"
+license = "MIT OR Apache-2.0"
+description = "A real-time, native GPU-accelerated Typst document previewer for Neovim written in Rust."
 
 [[bin]]
 name = "typst-previewer"
