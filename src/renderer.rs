@@ -305,6 +305,7 @@ impl Renderer {
             });
 
         let visible_layouts = viewport.compute_visible_page_layouts();
+        crate::logger::log(&format!("renderer.render: visible_layouts={}, pages={}", visible_layouts.len(), self.pages.len()));
 
         {
             // Dark gray document workbench background

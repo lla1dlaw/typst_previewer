@@ -98,16 +98,21 @@ impl Viewport {
         self.clamp_scroll();
     }
 
+    pub fn logical_window_size(&self) -> (f32, f32) {
+        let scale = self.scale_factor.max(0.25);
+        (self.window_width as f32 / scale, self.window_height as f32 / scale)
+    }
+
     pub fn clamp_scroll(&mut self) {
+        let (_, win_h) = self.logical_window_size();
         let scaled_total_height = self.total_document_height * self.zoom;
-        let max_scroll = (scaled_total_height - self.window_height as f32).max(0.0);
+        let max_scroll = (scaled_total_height - win_h).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
     }
 
     /// Computes which pages are currently visible and their NDC rects for shader rendering.
     pub fn compute_visible_page_layouts(&self) -> Vec<PageLayout> {
-        let win_w = self.window_width as f32;
-        let win_h = self.window_height as f32;
+        let (win_w, win_h) = self.logical_window_size();
         let mut layouts = Vec::new();
 
         let viewport_top = self.scroll_y;
@@ -145,7 +150,10 @@ impl Viewport {
 
     /// Converts window pixel coordinates (e.g. mouse click) to page index and page-local points (x_pt, y_pt).
     pub fn window_to_page_coords(&self, win_x: f32, win_y: f32) -> Option<(usize, f32, f32)> {
-        let win_w = self.window_width as f32;
+        let scale = self.scale_factor.max(0.25);
+        let win_x = win_x / scale;
+        let win_y = win_y / scale;
+        let (win_w, _) = self.logical_window_size();
 
         for (i, &(base_w, base_h)) in self.page_sizes.iter().enumerate() {
             let page_w_px = base_w * self.zoom;

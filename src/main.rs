@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod compiler;
+pub mod logger;
 mod neovim;
 mod renderer;
 mod viewport;
@@ -66,7 +67,15 @@ impl App {
     }
 
     fn recompile_and_update(&mut self) {
-        if let Some(pages) = self.compiler.compile_and_render() {
+        crate::logger::log(&format!("recompile_and_update called; src len={}", self.compiler.get_source().len()));
+        let (pages_opt, diag_opt) = self.compiler.compile_and_render();
+
+        if let Some(err_msg) = diag_opt {
+            let _ = self.tx_outgoing.send(OutgoingMessage::Diagnostic { message: err_msg });
+        }
+
+        if let Some(pages) = pages_opt {
+            crate::logger::log(&format!("compiled {} pages", pages.len()));
             self.viewport.set_pages(&pages);
             if let Some(renderer) = &mut self.renderer {
                 renderer.update_page_textures(&pages);
@@ -103,6 +112,7 @@ impl App {
 
 impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        crate::logger::log("resumed called");
         if self.window.is_some() {
             return;
         }
@@ -128,8 +138,8 @@ impl ApplicationHandler<AppEvent> for App {
         self.renderer = Some(renderer);
         self.window = Some(window);
 
-        // If content was received before window creation, compile now
-        if !self.initial_compiled && !self.compiler.get_source().is_empty() {
+        // Ensure preview compiles and renders initial document or blank page
+        if !self.initial_compiled {
             self.initial_compiled = true;
             self.recompile_and_update();
         }
@@ -138,6 +148,7 @@ impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Nvim(NvimMessage::InitBuffer { content, filepath, config }) => {
+                crate::logger::log(&format!("user_event InitBuffer: len={}, path={}", content.len(), filepath));
                 self.config = config;
                 self.compiler.set_system_fonts(self.config.system_fonts);
 
@@ -271,6 +282,7 @@ impl ApplicationHandler<AppEvent> for App {
                 _ => {}
             },
             WindowEvent::RedrawRequested => {
+                crate::logger::log("RedrawRequested called");
                 if let Some(renderer) = &mut self.renderer {
                     renderer.render(&self.viewport);
                 }

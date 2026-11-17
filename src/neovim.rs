@@ -51,6 +51,10 @@ pub enum OutgoingMessage {
         line: usize,
         col: usize,
     },
+    /// Compilation diagnostic message to notify user in Neovim.
+    Diagnostic {
+        message: String,
+    },
 }
 
 #[derive(Clone)]
@@ -68,6 +72,7 @@ impl Handler for NvimHandler {
         args: Vec<Value>,
         _neovim: Neovim<Self::Writer>,
     ) {
+        crate::logger::log(&format!("handle_notify: name={}, args len={}", name, args.len()));
         match name.as_str() {
             "init_buffer" => {
                 if let Some(map) = args.first().and_then(|v| v.as_map()) {
@@ -145,6 +150,11 @@ pub async fn run_rpc(
                             if let Err(e) = nvim_client.exec_lua(lua_code, args).await {
                                 eprintln!("[nvim-rpc] jump_to exec_lua error: {:?}", e);
                             }
+                        }
+                        OutgoingMessage::Diagnostic { message } => {
+                            let args = vec![Value::from(message)];
+                            let lua_code = "vim.schedule(function() vim.notify('Typst: ' .. ..., vim.log.levels.WARN) end)";
+                            let _ = nvim_client.exec_lua(lua_code, args).await;
                         }
                     }
                 }
