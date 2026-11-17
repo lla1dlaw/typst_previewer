@@ -1,0 +1,37 @@
+[package]
+name = "typst-previewer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "typst-previewer"
+path = "src/main.rs"
+
+[dependencies]
+# Window + GPU display
+winit = "0.30"
+wgpu = "24"
+pollster = "0.4"
+bytemuck = { version = "1.16", features = ["derive"] }
+
+# Typst compilation + rendering
+typst = "0.15"
+typst-render = "0.15"
+typst-layout = "0.15"
+typst-assets = { version = "0.15", features = ["fonts"] }
+comemo = "0.5"
+
+# Neovim RPC
+nvim-rs = { version = "0.9", features = ["use_tokio"] }
+rmpv = "1.3"
+async-trait = "0.1"
+tokio = { version = "1", features = ["io-std", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# Text buffer
+ropey = "1.6"
+
+# Utilities
+chrono = "0.4"
+env_logger = "0.11"
+log = "0.4"
