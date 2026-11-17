@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::compiler::TypstCompiler;
-use crate::neovim::NvimMessage;
+use crate::neovim::{NvimMessage, OutgoingMessage};
 use crate::renderer::Renderer;
 use crate::viewport::Viewport;
 
@@ -34,10 +34,12 @@ struct App {
     pending_recompile: bool,
     last_edit_time: Instant,
     initial_compiled: bool,
+    cursor_pos: (f32, f32),
+    tx_outgoing: mpsc::UnboundedSender<OutgoingMessage>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(tx_outgoing: mpsc::UnboundedSender<OutgoingMessage>) -> Self {
         Self {
             window: None,
             renderer: None,
@@ -46,6 +48,8 @@ impl App {
             pending_recompile: false,
             last_edit_time: Instant::now(),
             initial_compiled: false,
+            cursor_pos: (0.0, 0.0),
+            tx_outgoing,
         }
     }
 
@@ -121,6 +125,29 @@ impl ApplicationHandler<AppEvent> for App {
                 self.viewport.set_window_size(size.width, size.height);
                 if let Some(window) = &self.window {
                     window.request_redraw();
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_pos = (position.x as f32, position.y as f32);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // Click-to-source jump
+                if let Some((page_idx, x_pt, y_pt)) =
+                    self.viewport.window_to_page_coords(self.cursor_pos.0, self.cursor_pos.1)
+                {
+                    if let Some((filepath, line, col)) =
+                        self.compiler.click_to_source(page_idx, x_pt, y_pt)
+                    {
+                        let _ = self.tx_outgoing.send(OutgoingMessage::JumpTo {
+                            filepath,
+                            line,
+                            col,
+                        });
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -219,28 +246,29 @@ fn main() {
         .expect("Failed to build event loop");
 
     let proxy = event_loop.create_proxy();
+    let (tx_outgoing, rx_outgoing) = mpsc::unbounded_channel::<OutgoingMessage>();
 
     // Start background Tokio runtime for Neovim MessagePack-RPC
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        let (tx, mut rx) = mpsc::unbounded_channel::<NvimMessage>();
+        let (tx_incoming, mut rx_incoming) = mpsc::unbounded_channel::<NvimMessage>();
 
-        // Forward messages from mpsc channel to winit EventLoopProxy
+        // Forward incoming messages from mpsc channel to winit EventLoopProxy
         let proxy_clone = proxy.clone();
         rt.spawn(async move {
-            while let Some(msg) = rx.recv().await {
+            while let Some(msg) = rx_incoming.recv().await {
                 let _ = proxy_clone.send_event(AppEvent::Nvim(msg));
             }
         });
 
         rt.block_on(async {
-            neovim::run_rpc(tx).await;
+            neovim::run_rpc(tx_incoming, rx_outgoing).await;
         });
 
         // When Neovim exits and closes stdio, exit the previewer process
         std::process::exit(0);
     });
 
-    let mut app = App::new();
+    let mut app = App::new(tx_outgoing);
     event_loop.run_app(&mut app).expect("Event loop error");
 }

@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime, Duration};
-use typst::syntax::{FileId, Source};
+use typst::syntax::{FileId, Source, Span};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
-use typst::{Library, LibraryExt, World};
+use typst::{Library, LibraryExt, World, WorldExt};
 use typst_layout::PagedDocument;
+use typst_library::layout::{Abs, Frame, FrameItem, Point};
 use typst_render::{render, RenderOptions};
 
 /// A single rendered page containing raw RGBA pixel data and dimensions.
@@ -25,6 +26,7 @@ pub struct TypstCompiler {
     library: Arc<LazyHash<Library>>,
     fontbook: Arc<LazyHash<FontBook>>,
     fonts: Arc<Vec<Font>>,
+    document: Option<PagedDocument>,
 }
 
 impl TypstCompiler {
@@ -36,6 +38,7 @@ impl TypstCompiler {
             library: Arc::new(LazyHash::new(Library::default())),
             fontbook: Arc::new(LazyHash::new(fontbook)),
             fonts: Arc::new(fonts),
+            document: None,
         }
     }
 
@@ -67,11 +70,12 @@ impl TypstCompiler {
         self.rope.to_string()
     }
 
+    /// Gets the current file path.
+    pub fn get_filepath(&self) -> String {
+        self.filepath.to_string_lossy().to_string()
+    }
+
     /// Applies an incremental line delta from Neovim's on_lines event.
-    ///
-    /// `firstline`: 0-indexed line where replacement begins
-    /// `lastline`: 0-indexed line where replacement ends (exclusive)
-    /// `new_lines`: slice of new line contents to insert
     pub fn apply_delta(&mut self, firstline: usize, lastline: usize, new_lines: &[String]) {
         let total_lines = self.rope.len_lines();
 
@@ -95,16 +99,16 @@ impl TypstCompiler {
         // Insert new lines (if any)
         if !new_lines.is_empty() {
             let mut replacement = new_lines.join("\n");
-            // If replacing within lines, preserve trailing newline
             replacement.push('\n');
             self.rope.insert(start_char, &replacement);
         }
     }
 
     /// Compiles the current document and renders all pages to raster RGBA pixel buffers.
-    pub fn compile_and_render(&self) -> Option<Vec<RenderedPage>> {
+    pub fn compile_and_render(&mut self) -> Option<Vec<RenderedPage>> {
         let source_text = self.rope.to_string();
         if source_text.trim().is_empty() {
+            self.document = None;
             return Some(Vec::new());
         }
 
@@ -141,7 +145,114 @@ impl TypstCompiler {
             })
             .collect();
 
+        self.document = Some(document);
         Some(pages)
+    }
+
+    /// Click-to-source jump: given page index and coordinates (in typographic points),
+    /// finds the corresponding source location (file, 1-indexed line, 0-indexed column).
+    pub fn click_to_source(&self, page_index: usize, x_pt: f32, y_pt: f32) -> Option<(String, usize, usize)> {
+        let doc = self.document.as_ref()?;
+        let page = doc.pages().get(page_index)?;
+
+        let click_pt = Point::new(Abs::pt(x_pt as f64), Abs::pt(y_pt as f64));
+        let mut best: Option<HitCandidate> = None;
+        hit_test_frame(&page.frame, click_pt, &mut best);
+
+        let candidate = best?;
+        // Ignore clicks that are too far from any content (> 150 points)
+        if candidate.dist_sq > 150.0 * 150.0 {
+            return None;
+        }
+
+        let world = PreviewWorld {
+            source: Source::detached(&self.rope.to_string()),
+            library: &self.library,
+            fontbook: &self.fontbook,
+            fonts: &self.fonts,
+            filepath: &self.filepath,
+        };
+
+        let range = world.range(candidate.span)?;
+        let byte_offset = range.start.min(self.rope.len_bytes());
+        let line = self.rope.byte_to_line(byte_offset);
+        let line_start_byte = self.rope.line_to_byte(line);
+        let col = byte_offset.saturating_sub(line_start_byte);
+
+        Some((self.get_filepath(), line + 1, col))
+    }
+}
+
+struct HitCandidate {
+    span: Span,
+    dist_sq: f64,
+}
+
+fn hit_test_frame(
+    frame: &Frame,
+    point: Point,
+    best: &mut Option<HitCandidate>,
+) {
+    for (pos, item) in frame.items() {
+        match item {
+            FrameItem::Text(text) => {
+                let mut current_x = pos.x;
+                for glyph in &text.glyphs {
+                    let glyph_w = glyph.x_advance.at(text.size);
+                    let glyph_mid_x = current_x + glyph_w / 2.0;
+                    let glyph_mid_y = pos.y - text.size / 2.0;
+
+                    let dx = (point.x - glyph_mid_x).to_pt();
+                    let dy = (point.y - glyph_mid_y).to_pt();
+                    let dist_sq = dx * dx + dy * dy;
+
+                    if best.as_ref().map_or(true, |b| dist_sq < b.dist_sq) {
+                        if glyph.span.0.id().is_some() {
+                            *best = Some(HitCandidate {
+                                span: glyph.span.0,
+                                dist_sq,
+                            });
+                        }
+                    }
+                    current_x += glyph_w;
+                }
+            }
+            FrameItem::Shape(_, span) => {
+                if span.id().is_some() {
+                    let dx = (point.x - pos.x).to_pt();
+                    let dy = (point.y - pos.y).to_pt();
+                    let dist_sq = dx * dx + dy * dy;
+                    if best.as_ref().map_or(true, |b| dist_sq < b.dist_sq) {
+                        *best = Some(HitCandidate {
+                            span: *span,
+                            dist_sq,
+                        });
+                    }
+                }
+            }
+            FrameItem::Image(_, size, span) => {
+                if span.id().is_some() {
+                    let mid_x = pos.x + size.x / 2.0;
+                    let mid_y = pos.y + size.y / 2.0;
+                    let dx = (point.x - mid_x).to_pt();
+                    let dy = (point.y - mid_y).to_pt();
+                    let dist_sq = dx * dx + dy * dy;
+                    if best.as_ref().map_or(true, |b| dist_sq < b.dist_sq) {
+                        *best = Some(HitCandidate {
+                            span: *span,
+                            dist_sq,
+                        });
+                    }
+                }
+            }
+            FrameItem::Group(group) => {
+                let local_point = point - *pos;
+                let inv = group.transform.invert().unwrap_or_default();
+                let child_point = local_point.transform(inv);
+                hit_test_frame(&group.frame, child_point, best);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -206,7 +317,6 @@ mod tests {
         let mut compiler = TypstCompiler::new();
         compiler.set_source("line 1\nline 2\nline 3\n".to_string(), "test.typ".to_string());
 
-        // Replace line 1 (0-indexed: index 1..2 is "line 2")
         compiler.apply_delta(1, 2, &["replacement line".to_string()]);
         assert_eq!(compiler.get_source(), "line 1\nreplacement line\nline 3\n");
     }
@@ -223,5 +333,25 @@ mod tests {
         assert!(pages[0].width > 0);
         assert!(pages[0].height > 0);
         assert_eq!(pages[0].pixels.len(), (pages[0].width * pages[0].height * 4) as usize);
+    }
+
+    #[test]
+    fn test_click_to_source_jump() {
+        let mut compiler = TypstCompiler::new();
+        let content = "= Heading\n\nFirst paragraph content here.\n\nSecond paragraph content here.";
+        compiler.set_source(content.to_string(), "doc.typ".to_string());
+
+        let pages = compiler.compile_and_render();
+        assert!(pages.is_some());
+
+        // In a typical A4/Letter Typst page, margins are ~72pt (1 inch).
+        // The top heading is near x = 72..200, y = 72..100.
+        let hit = compiler.click_to_source(0, 80.0, 80.0);
+        assert!(hit.is_some());
+        let (file, line, col) = hit.unwrap();
+        assert_eq!(file, "doc.typ");
+        // Line should be line 1 (the heading)
+        assert_eq!(line, 1);
+        assert!(col <= 9);
     }
 }

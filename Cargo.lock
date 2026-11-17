@@ -4045,6 +4045,7 @@ dependencies = [
  "typst",
  "typst-assets",
  "typst-layout",
+ "typst-library",
  "typst-render",
  "wgpu",
  "winit",

@@ -19,6 +19,17 @@ pub enum NvimMessage {
     },
 }
 
+/// Outgoing messages from GUI thread to Neovim over RPC.
+#[derive(Debug)]
+pub enum OutgoingMessage {
+    /// Request Neovim to move cursor to source location.
+    JumpTo {
+        filepath: String,
+        line: usize,
+        col: usize,
+    },
+}
+
 #[derive(Clone)]
 struct NvimHandler {
     tx: mpsc::UnboundedSender<NvimMessage>,
@@ -64,10 +75,34 @@ impl Handler for NvimHandler {
 
 /// Runs the MessagePack-RPC event loop over stdio.
 /// Blocks until Neovim closes the stdin pipe.
-pub async fn run_rpc(tx: mpsc::UnboundedSender<NvimMessage>) {
-    let handler = NvimHandler { tx };
+pub async fn run_rpc(
+    tx_incoming: mpsc::UnboundedSender<NvimMessage>,
+    mut rx_outgoing: mpsc::UnboundedReceiver<OutgoingMessage>,
+) {
+    let handler = NvimHandler { tx: tx_incoming };
     match create::new_parent(handler).await {
-        Ok((_neovim, io_handler)) => {
+        Ok((neovim, io_handler)) => {
+            let nvim_client = neovim.clone();
+
+            // Spawn outgoing message writer task
+            tokio::spawn(async move {
+                while let Some(msg) = rx_outgoing.recv().await {
+                    match msg {
+                        OutgoingMessage::JumpTo { filepath, line, col } => {
+                            let args = vec![
+                                Value::from(filepath),
+                                Value::from(line as u64),
+                                Value::from(col as u64),
+                            ];
+                            let lua_code = "require('typst_previewer').jump_to(...)";
+                            if let Err(e) = nvim_client.exec_lua(lua_code, args).await {
+                                eprintln!("[nvim-rpc] jump_to exec_lua error: {:?}", e);
+                            }
+                        }
+                    }
+                }
+            });
+
             if let Err(e) = io_handler.await {
                 eprintln!("[nvim-rpc] IO loop closed: {:?}", e);
             }
